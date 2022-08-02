@@ -1,4 +1,8 @@
 require("./utils.lua")
+require("./stellar_craft/callbacks.lua")
+require("./stellar_craft/customAi.lua")
+
+
 
 dataSheet = {}
 dataSheet["Command Center"] = {
@@ -7,7 +11,7 @@ dataSheet["Command Center"] = {
     canBuild = {"SCV"},
     lastIndex = 1,
     isUnit = false,
-    template = "Small Station",
+    template = "Medium Station",
 }
 dataSheet["SCV"] = {
     buildCost = 50,
@@ -16,6 +20,7 @@ dataSheet["SCV"] = {
     lastIndex = 1,
     isUnit = true,
     template = "Goods Freighter 1",
+    customComms = scvCustomComms,
 }
 dataSheet["Fighter Bay"] = {
     buildCost = 100,
@@ -101,8 +106,8 @@ end
 
 
 local function orderConstructFunc(what, parent)
-    if not dataSheet[what].isUnit and #(parent:getObjectsInRange(500)) > 1 then
-        setCommsMessage(_("Construction site is blocked, need at least 500 units of free space"))
+    if not dataSheet[what].isUnit and #(parent:getObjectsInRange(4000)) > 1 then
+        setCommsMessage(_("Construction site is blocked, need at least 4000 units of free space"))
         return
     end
 
@@ -113,11 +118,11 @@ local function orderConstructFunc(what, parent)
         end
 
         registerAtSecondsCallback(getScenarioTime() + dataSheet[what].buildTime, function()
-            comms_target.currentConstruction = nil
+            parent.currentConstruction = nil
             if parent:isValid() then
 
                 constructedThing = thingFactory(parent, what)
-                if comms_target.typeName == "CpuShip" then
+                if parent.typeName == "CpuShip" then
                     parent:orderDefendTarget(constructedThing)
                 end
 
@@ -156,28 +161,40 @@ function commsAllInOne()
     dsEntry = dataSheet[comms_target.type]
     if #dsEntry.canBuild > 0 then
         if comms_target.currentConstruction == nil then
-            setCommsMessage(_("What should we do?"))
-            if dsEntry.isUnit then
-                commsStandardOrders()
+            if dsEntry.customComms and dsEntry.customComms(comms_source, comms_target) ~= 0 then
+                return
+            else
+                setCommsMessage(_("What should we do?"))
+                if dsEntry.isUnit then
+                    commsStandardOrders()
+                end
+                commsStandardBuild()
             end
-            commsStandardBuild()
         else
             setCommsMessage(_("We are currently constructing " .. comms_target.currentConstruction))
         end
     else
         setCommsMessage(_("What should we do?"))
         if dsEntry.isUnit then
+            if dsEntry.customComms ~= nil then
+                ret = dsEntry.customComms(comms_source, comms_target)
+                if ret ~= 0 then
+                    return
+                end
+            end
             commsStandardOrders()
         end
     end
 end
 
 
-
 -- Squadrons
 
 function intoSquadron(members)
     leader = nil
+    local angleSeparation = 300.0 / (#members)
+
+    escortIdx = 0
     for i=1, #members do
         if members[i]:isValid() then
             members[i].squadronMembers = members
@@ -185,7 +202,9 @@ function intoSquadron(members)
                 leader = members[i]
                 members[i].squadronLeader = leader
             else
-                members[i]:orderDefendTarget(leader)  -- TODO: formation
+                escortIdx = escortIdx + 1
+                local dx, dy = vectorFromAngle(30.0 + escortIdx * angleSeparation, 700)
+                members[i]:orderFlyFormation(leader, dx, dy)
                 members[i].squadronLeader = leader
             end
         end
@@ -196,8 +215,6 @@ function intoSquadron(members)
         intoSquadron(obj.squadronMembers)
     end)
 end
-
-
 
 
 --- Factories
@@ -227,6 +244,17 @@ function thingFactory(parent, dsName)
 
     if #dsEntry.canBuild > 0 then
         thing.currentConstruction = nil
+    end
+
+    thing.aiState = 0
+
+    -- scv specific, TODO refactor this
+    if thing.type == "SCV" then
+        thing.aiState = scvAiAsteroidMiner
+        thing.currentAsteroid = nil
+        thing.dropOffSite = nil
+        thing.currentOre = 0
+        scvOrderMineAsteroids(thing)
     end
 
     return thing
